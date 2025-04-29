@@ -276,11 +276,10 @@ let hyps_after sigma env pos args =
   List.fold_left (fun acc d -> Id.Set.add (get_id d) acc) Id.Set.empty env
 
 let simpl_of csts =
-  let opacify () = List.iter (fun (cst,_) ->
-    Global.set_strategy (Conv_oracle.EvalConstRef cst) Conv_oracle.Opaque) csts
-  and transp () = List.iter (fun (cst, level) ->
-    Global.set_strategy (Conv_oracle.EvalConstRef cst) level) csts
-  in opacify, transp
+  let open Conv_oracle in
+  let opacify = List.map (fun (cst,_) -> Opaque, [GlobRef.ConstRef cst]) csts in
+  let transp = List.map (fun (cst, level) -> level, [GlobRef.ConstRef cst]) csts in
+  opacify, transp
 
 let gather_subst env sigma ty args len =
   let rec aux ty args n =
@@ -838,14 +837,12 @@ let ind_fun_tac is_rec f info fid nestedinfo progs =
       | [p, unfp, cpi, ei] -> p, unfp
       | _ -> assert false
     in
-    opacify ();
     let tac =
-      Proofview.tclBIND
         (tclCOMPLETE (tclTHENLIST
                         [set_eos_tac (); intros;
                          aux_ind_fun info (0, 0) nestedinfo unfp [] p]))
-        (fun r -> transp (); Proofview.tclUNIT r)
     in
+    let tac = Tactics.with_set_strategy opacify tac in
     tclORELSE (check_guard tac)
       (fun (e, einfo) ->
          match e with
@@ -890,15 +887,6 @@ let headcst sigma f =
   let f, _ = decompose_app sigma f in
   if isConst sigma f then fst (destConst sigma f)
   else assert false
-
-(* FIXME: stop messing with the global environment *)
-let wrap tac before after =
-  Proofview.tclUNIT () >>= fun () ->
-  let () = before () in
-  Proofview.Unsafe.tclSETENV (Global.env ()) >>= fun () ->
-  tac >>= fun () ->
-  let () = after () in
-  Proofview.Unsafe.tclSETENV (Global.env ())
 
 let solve_rec_eq simpltac subst =
   Proofview.Goal.enter begin fun gl ->
@@ -1035,8 +1023,8 @@ let prove_unfolding info where_map f_cst funf_cst subst base unfold_base trace =
   let helpercsts = List.map (fun (cst, i) -> cst) info.helpers_info in
   let opacify, transp = simpl_of ((destConstRef (Lazy.force coq_hidebody), Conv_oracle.transparent)
     :: List.map (fun x -> x, Conv_oracle.Expand) (f_cst :: funf_cst :: helpercsts)) in
-  let opacified tac = wrap tac opacify transp in
-  let transparent tac = wrap tac transp opacify in
+  let opacified tac = with_set_strategy opacify tac in
+  let transparent tac = with_set_strategy transp tac in
   let simpltac = opacified (simpl_equations_tac ()) in
   let unfolds base base' =
     tclTHEN (autounfold_heads [base] [base'] None)
@@ -1186,22 +1174,20 @@ let prove_unfolding_lemma info where_map f_cst funf_cst p unfp =
   let helpercsts = List.map (fun (cst, i) -> cst) info.helpers_info in
   let opacify, transp = simpl_of ((destConstRef (Lazy.force coq_hidebody), Conv_oracle.transparent)
     :: List.map (fun x -> x, Conv_oracle.Expand) (f_cst :: funf_cst :: helpercsts)) in
-  let opacified tac = wrap tac opacify transp in
+  let opacified tac = with_set_strategy opacify tac in
   let my_simpl = opacified simpl_in_concl in
   Proofview.tclORELSE (
     tclTHENLIST
       [set_eos_tac (); intros; prove_unfolding_lemma_aux info where_map my_simpl [f_cst, funf_cst] p unfp] >>= fun () ->
-    let () = transp () in
     Proofview.tclUNIT ())
-    (fun (e, info) -> let () = transp () in Proofview.tclZERO ~info e)
-
+    (fun (e, info) -> Proofview.tclZERO ~info e)
   end
 
 let prove_unfolding_sublemma info where_map f_cst funf_cst (subst, p, unfp) =
   let helpercsts = List.map (fun (cst, i) -> cst) info.helpers_info in
   let opacify, transp = simpl_of ((destConstRef (Lazy.force coq_hidebody), Conv_oracle.transparent)
     :: List.map (fun x -> x, Conv_oracle.Expand) (f_cst :: funf_cst :: helpercsts)) in
-  let opacified tac = wrap tac opacify transp in
+  let opacified tac = with_set_strategy opacify tac in
   let my_simpl = opacified simpl_in_concl in
   prove_unfolding_lemma_aux info where_map my_simpl subst p unfp
 
